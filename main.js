@@ -133,6 +133,9 @@ function stopPlay() {
 function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y) || 0.0001; }
 function midpoint(l) { return { x: (l.a.x + l.b.x) / 2, y: (l.a.y + l.b.y) / 2 }; }
 
+function connected(a, b) {
+  return lines.some(l => (l.a === a && l.b === b) || (l.a === b && l.b === a));
+}
 function dotAt(p) {
   for (let i = dots.length - 1; i >= 0; i--) {
     if (Math.hypot(dots[i].x - p.x, dots[i].y - p.y) <= HIT_R) return dots[i];
@@ -216,12 +219,8 @@ playCanvas.addEventListener("mouseup", (e) => {
 
   if (dragLineFrom) {
     const target = dotAt(p);
-    if (target && target !== dragLineFrom && moved) {
-      const exists = lines.some(l =>
-        (l.a === dragLineFrom && l.b === target) || (l.b === dragLineFrom && l.a === target));
-      if (!exists) {
-        lines.push({ a: dragLineFrom, b: target, rest: dist(dragLineFrom, target), muscle: null });
-      }
+    if (target && target !== dragLineFrom && moved && !connected(dragLineFrom, target)) {
+      lines.push({ a: dragLineFrom, b: target, rest: dist(dragLineFrom, target), muscle: null });
     }
     dragLineFrom = null;
     if (moved) { downPos = null; return; }
@@ -294,12 +293,18 @@ function waveDotPos(line) {
 }
 
 function waveDotAt(p) {
+  // among overlapping wave dots, prefer the muscle selected in the play area,
+  // then the closest
+  let best = null, bestD = Infinity;
   for (const l of lines) {
     if (!l.muscle) continue;
     const wp = waveDotPos(l);
-    if (Math.hypot(wp.x - p.x, wp.y - p.y) <= HIT_R) return l;
+    const d = Math.hypot(wp.x - p.x, wp.y - p.y);
+    if (d > HIT_R) continue;
+    if (l === selectedMuscleLine) return l;
+    if (d < bestD) { best = l; bestD = d; }
   }
-  return null;
+  return best;
 }
 
 waveCanvas.addEventListener("mousedown", (e) => {
@@ -341,6 +346,7 @@ function physicsStep(dt) {
       d.py = d.y;
       d.x += vx;
       d.y += vy + params.gravity * h * h;
+      d.hit = false;
     }
 
     // ease muscles in after Play so structures don't jolt on the first frames
@@ -374,21 +380,39 @@ function physicsStep(dt) {
       // walls (dots are the only colliders)
       for (const d of dots) collideWalls(d, w, ph);
     }
+
+    // contact absorption: while a dot sits in a thin band against a wall,
+    // scale its separation velocity by rubber. The clamp above only kills
+    // the impact; without this, the springy line network re-launches the
+    // structure and rubber 0 still bounces.
+    const e = params.rubber;
+    if (e < 1) {
+      const band = DOT_R + 4;
+      for (const d of dots) {
+        if (d.hit) continue; // clamp already applied restitution this substep
+        const vx = d.x - d.px, vy = d.y - d.py;
+        if (d.y >= ph - band && vy < 0) d.py = d.y - vy * e;
+        if (d.y <= band && vy > 0) d.py = d.y - vy * e;
+        if (d.x >= w - band && vx < 0) d.px = d.x - vx * e;
+        if (d.x <= band && vx > 0) d.px = d.x - vx * e;
+      }
+    }
   }
 }
 
 function collideWalls(d, w, h) {
   const r = DOT_R;
   const e = params.rubber;
-  if (d.x < r)      { const vx = d.x - d.px; d.x = r;     d.px = d.x + vx * e; }
-  if (d.x > w - r)  { const vx = d.x - d.px; d.x = w - r; d.px = d.x + vx * e; }
-  if (d.y < r)      { const vy = d.y - d.py; d.y = r;     d.py = d.y + vy * e; }
+  if (d.x < r)      { const vx = d.x - d.px; d.x = r;     d.px = d.x + vx * e; d.hit = true; }
+  if (d.x > w - r)  { const vx = d.x - d.px; d.x = w - r; d.px = d.x + vx * e; d.hit = true; }
+  if (d.y < r)      { const vy = d.y - d.py; d.y = r;     d.py = d.y + vy * e; d.hit = true; }
   if (d.y > h - r)  {
     const vy = d.y - d.py;
     const vx = d.x - d.px;
     d.y = h - r;
     d.py = d.y + vy * e;
     d.px = d.x - vx * 0.85; // ground friction
+    d.hit = true;
   }
 }
 
@@ -402,11 +426,12 @@ function drawPlay() {
   pctx.lineWidth = 2;
   pctx.strokeRect(1, 1, w - 2, h - 2);
 
-  // ghost line while dragging
+  // ghost line while dragging — green only when release would create a line
+  const dragTargetOk = dragLineFrom && hoveredDot && !connected(dragLineFrom, hoveredDot);
   if (dragLineFrom) {
     pctx.save();
     pctx.setLineDash([5, 5]);
-    pctx.strokeStyle = "#888";
+    pctx.strokeStyle = dragTargetOk ? HIGHLIGHT : "#888";
     pctx.lineWidth = 1.5;
     pctx.beginPath();
     pctx.moveTo(dragLineFrom.x, dragLineFrom.y);
@@ -456,14 +481,17 @@ function drawPlay() {
     pctx.fill();
   }
 
-  // dots — green when ready to start a line, or as the drag's destination
+  // dots — green when ready to start a line, or as a valid drag destination;
+  // an already-connected destination gets no highlight (release does nothing)
   for (const d of dots) {
-    const hot = d === hoveredDot || d === dragLineFrom;
+    const hot = dragLineFrom
+      ? d === dragLineFrom || (d === hoveredDot && dragTargetOk)
+      : d === hoveredDot;
     pctx.fillStyle = hot ? HIGHLIGHT : "#000";
     pctx.beginPath();
     pctx.arc(d.x, d.y, DOT_R, 0, TWO_PI);
     pctx.fill();
-    if (dragLineFrom && d === hoveredDot) {
+    if (d === hoveredDot && dragTargetOk) {
       // ring the destination dot: release here to finish the line
       pctx.strokeStyle = HIGHLIGHT;
       pctx.lineWidth = 2;
