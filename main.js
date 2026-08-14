@@ -25,7 +25,9 @@ let lines = [];  // {a, b, rest, muscle: null | {phase: 0..1, amp: 0..1}}
 let mode = "build";  // "build" | "play"
 let waveT = 0;       // wave phase offset, advances during play
 let playTime = 0;    // seconds since Play was pressed
-let hoveredMuscleLine = null; // line whose muscle is hovered (either canvas)
+let hoveredMuscleLine = null;  // line whose muscle is hovered (either canvas)
+let selectedMuscleLine = null; // just-added muscle, stays green until deselected
+let pendingLine = null;        // un-muscled line under cursor — shows ghost muscle
 
 // interaction state
 let dragLineFrom = null;  // dot we started a line-drag from
@@ -101,6 +103,9 @@ $("clear-btn").addEventListener("click", () => {
   if (mode === "play") stopPlay();
   dots = [];
   lines = [];
+  hoveredMuscleLine = null;
+  selectedMuscleLine = null;
+  pendingLine = null;
 });
 
 function startPlay() {
@@ -133,30 +138,22 @@ function dotAt(p) {
   }
   return null;
 }
-// All lines whose midpoint is near p, closest first. Crossing diagonals can
-// share a midpoint, so callers pick the candidate that suits them.
-function lineMidsNear(p) {
+// All lines within LINE_HIT of p (anywhere along the segment), closest first.
+// Crossing lines can overlap, so callers pick the candidate that suits them.
+const LINE_HIT = 8;
+function linesNear(p) {
   const res = [];
   for (const l of lines) {
-    const m = midpoint(l);
-    const d = Math.hypot(m.x - p.x, m.y - p.y);
-    if (d <= HIT_R) res.push({ l, d });
-  }
-  return res.sort((a, b) => a.d - b.d).map(o => o.l);
-}
-function lineAt(p) {
-  // distance from point to segment
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const l = lines[i];
     const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y;
     const len2 = dx * dx + dy * dy;
     if (len2 === 0) continue;
     let t = ((p.x - l.a.x) * dx + (p.y - l.a.y) * dy) / len2;
     t = Math.max(0, Math.min(1, t));
     const cx = l.a.x + t * dx, cy = l.a.y + t * dy;
-    if (Math.hypot(p.x - cx, p.y - cy) <= 6) return l;
+    const d = Math.hypot(p.x - cx, p.y - cy);
+    if (d <= LINE_HIT) res.push({ l, d });
   }
-  return null;
+  return res.sort((a, b) => a.d - b.d).map(o => o.l);
 }
 
 // Modulation factor for a muscle, -1..+1. Its wave-menu dot is a FIXED control
@@ -191,8 +188,16 @@ playCanvas.addEventListener("mousemove", (e) => {
     dragMoveDot.x = p.x;
     dragMoveDot.y = p.y;
   }
-  // hover detection for muscles
-  hoveredMuscleLine = lineMidsNear(p).find(l => l.muscle) || null;
+  // hover: anywhere on a muscled line highlights its muscle; anywhere on a
+  // bare line previews a pending muscle
+  hoveredMuscleLine = null;
+  pendingLine = null;
+  if (!dragMoveDot && !dragLineFrom) {
+    const near = linesNear(p);
+    const muscled = near.find(l => l.muscle);
+    if (muscled) hoveredMuscleLine = muscled;
+    else if (mode === "build" && near.length && !dotAt(p)) pendingLine = near[0];
+  }
 });
 
 playCanvas.addEventListener("mouseup", (e) => {
@@ -220,16 +225,22 @@ playCanvas.addEventListener("mouseup", (e) => {
 
   if (mode !== "build" || moved) { downPos = null; return; }
 
-  // simple click: add muscle if on a line middle, else place a dot
-  const mids = lineMidsNear(p);
-  if (mids.length) {
-    const free = mids.find(l => !l.muscle);
-    if (free) free.muscle = { px: 0.8, py: 0.5 };
+  // simple click: add a muscle anywhere on a bare line, else place a dot
+  const near = linesNear(p);
+  if (near.length) {
+    const free = near.find(l => !l.muscle);
+    if (free) {
+      free.muscle = { px: 0.5, py: 0.5 };  // wave dot starts at menu center
+      selectedMuscleLine = free;
+    } else {
+      selectedMuscleLine = near[0];        // clicking a muscled line selects it
+    }
     downPos = null;
     return;
   }
-  if (!dotAt(p) && !lineAt(p)) {
+  if (!dotAt(p)) {
     dots.push({ x: p.x, y: p.y, px: p.x, py: p.y, bx: p.x, by: p.y });
+    selectedMuscleLine = null;
   }
   downPos = null;
 });
@@ -238,6 +249,7 @@ playCanvas.addEventListener("mouseleave", () => {
   dragLineFrom = null;
   dragMoveDot = null;
   hoveredMuscleLine = null;
+  pendingLine = null;
 });
 
 // right-click delete: dot (and its lines) > muscle > line
@@ -249,12 +261,14 @@ playCanvas.addEventListener("contextmenu", (e) => {
   if (d) {
     dots = dots.filter(x => x !== d);
     lines = lines.filter(l => l.a !== d && l.b !== d);
-    return;
+  } else {
+    const near = linesNear(p);
+    const muscled = near.find(l => l.muscle);
+    if (muscled) muscled.muscle = null;
+    else if (near.length) lines = lines.filter(x => x !== near[0]);
   }
-  const lm = lineMidsNear(p).find(l => l.muscle);
-  if (lm) { lm.muscle = null; return; }
-  const l = lineAt(p);
-  if (l) lines = lines.filter(x => x !== l);
+  if (!lines.includes(selectedMuscleLine)) selectedMuscleLine = null;
+  if (selectedMuscleLine && !selectedMuscleLine.muscle) selectedMuscleLine = null;
 });
 
 // ---------- Wave-menu interaction ----------
@@ -284,6 +298,7 @@ waveCanvas.addEventListener("mousedown", (e) => {
   if (e.button !== 0) return;
   const p = canvasPos(e, waveCanvas);
   dragWaveLine = waveDotAt(p);
+  if (dragWaveLine) selectedMuscleLine = dragWaveLine;
 });
 
 waveCanvas.addEventListener("mousemove", (e) => {
@@ -402,11 +417,24 @@ function drawPlay() {
     pctx.stroke();
   }
 
+  // ghost preview of a pending muscle on the hovered bare line
+  if (pendingLine && !pendingLine.muscle) {
+    const m = midpoint(pendingLine);
+    pctx.save();
+    pctx.setLineDash([3, 3]);
+    pctx.strokeStyle = "#888";
+    pctx.lineWidth = 1.5;
+    pctx.beginPath();
+    pctx.arc(m.x, m.y, MUSCLE_R, 0, TWO_PI);
+    pctx.stroke();
+    pctx.restore();
+  }
+
   // muscles (outlined circle at line center)
   for (const l of lines) {
     if (!l.muscle) continue;
     const m = midpoint(l);
-    const hot = l === hoveredMuscleLine;
+    const hot = l === hoveredMuscleLine || l === selectedMuscleLine;
     pctx.strokeStyle = hot ? HIGHLIGHT : "#000";
     pctx.fillStyle = "#fff";
     pctx.lineWidth = 2;
@@ -464,7 +492,7 @@ function drawWave() {
   for (const l of lines) {
     if (!l.muscle) continue;
     const p = waveDotPos(l);
-    const hot = l === hoveredMuscleLine;
+    const hot = l === hoveredMuscleLine || l === selectedMuscleLine;
     wctx.fillStyle = hot ? HIGHLIGHT : "#000";
     wctx.beginPath();
     wctx.arc(p.x, p.y, 6, 0, TWO_PI);

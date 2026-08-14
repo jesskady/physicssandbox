@@ -22,7 +22,7 @@ Open `index.html` in a browser — no build step, no dependencies.
 |---|---|
 | Place dot | Click empty space |
 | Draw line | Drag from one dot, release on another |
-| Add muscle | Click the middle of a line |
+| Add muscle | Click anywhere on a line (hovering a bare line previews the pending muscle; a new muscle and its wave dot start highlighted green, with the wave dot at the exact center of the wave menu) |
 | Move dot | Shift + drag the dot |
 | Delete dot / muscle / line | Right-click it |
 | Tune a muscle | Drag its dot anywhere on the wave menu. The dot is a fixed control point — it never moves on its own. Vertical placement sets its phase within the wave period; horizontal placement sets signed strength (center = no movement, right of center = expands first, left of center = contracts first) |
