@@ -4,6 +4,7 @@
 const params = {
   gravity: 900,      // px/s^2
   rubber: 0.4,       // wall restitution 0..1
+  stiffness: 0.6,    // non-muscle line rigidity 0..1; lower = stretchier frame
   waveSpeed: 3,      // rad/s — how fast the wave rolls
   waveAmp: 0.25,     // max fraction a muscle expands/contracts its line
 };
@@ -89,6 +90,7 @@ function bindSlider(id, key, minDef, maxDef, decimals, hasMinMax = true) {
 
 bindSlider("gravity", "gravity", 0, 2000, 0);
 bindSlider("rubber", "rubber", 0, 1, 2, false);
+bindSlider("stiffness", "stiffness", 0.05, 1, 2, false);
 bindSlider("wave-speed", "waveSpeed", 0, 10, 2);
 bindSlider("wave-amp", "waveAmp", 0, 0.6, 3);
 
@@ -131,12 +133,16 @@ function dotAt(p) {
   }
   return null;
 }
-function lineMidAt(p) {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const m = midpoint(lines[i]);
-    if (Math.hypot(m.x - p.x, m.y - p.y) <= HIT_R) return lines[i];
+// All lines whose midpoint is near p, closest first. Crossing diagonals can
+// share a midpoint, so callers pick the candidate that suits them.
+function lineMidsNear(p) {
+  const res = [];
+  for (const l of lines) {
+    const m = midpoint(l);
+    const d = Math.hypot(m.x - p.x, m.y - p.y);
+    if (d <= HIT_R) res.push({ l, d });
   }
-  return null;
+  return res.sort((a, b) => a.d - b.d).map(o => o.l);
 }
 function lineAt(p) {
   // distance from point to segment
@@ -186,9 +192,7 @@ playCanvas.addEventListener("mousemove", (e) => {
     dragMoveDot.y = p.y;
   }
   // hover detection for muscles
-  hoveredMuscleLine = null;
-  const l = lineMidAt(p);
-  if (l && l.muscle) hoveredMuscleLine = l;
+  hoveredMuscleLine = lineMidsNear(p).find(l => l.muscle) || null;
 });
 
 playCanvas.addEventListener("mouseup", (e) => {
@@ -217,9 +221,10 @@ playCanvas.addEventListener("mouseup", (e) => {
   if (mode !== "build" || moved) { downPos = null; return; }
 
   // simple click: add muscle if on a line middle, else place a dot
-  const lm = lineMidAt(p);
-  if (lm) {
-    if (!lm.muscle) lm.muscle = { px: 0.8, py: 0.5 };
+  const mids = lineMidsNear(p);
+  if (mids.length) {
+    const free = mids.find(l => !l.muscle);
+    if (free) free.muscle = { px: 0.8, py: 0.5 };
     downPos = null;
     return;
   }
@@ -246,8 +251,8 @@ playCanvas.addEventListener("contextmenu", (e) => {
     lines = lines.filter(l => l.a !== d && l.b !== d);
     return;
   }
-  const lm = lineMidAt(p);
-  if (lm && lm.muscle) { lm.muscle = null; return; }
+  const lm = lineMidsNear(p).find(l => l.muscle);
+  if (lm) { lm.muscle = null; return; }
   const l = lineAt(p);
   if (l) lines = lines.filter(x => x !== l);
 });
@@ -315,20 +320,29 @@ function physicsStep(dt) {
       d.y += vy + params.gravity * h * h;
     }
 
+    // ease muscles in after Play so structures don't jolt on the first frames
+    const r = Math.min(1, playTime / MUSCLE_RAMP);
+    const ramp = r * r * (3 - 2 * r);
+    // per-iteration correction so CONSTRAINT_ITERS passes compound to params.stiffness
+    const iterK = 1 - Math.pow(1 - params.stiffness, 1 / CONSTRAINT_ITERS);
+
     // solve constraints
     for (let it = 0; it < CONSTRAINT_ITERS; it++) {
-      // ease muscles in after Play so structures don't jolt on the first frames
-      const r = Math.min(1, playTime / MUSCLE_RAMP);
-      const ramp = r * r * (3 - 2 * r);
-      for (const l of lines) {
+      // alternate sweep direction each pass — a fixed solve order biases
+      // over-constrained rigs (e.g. cross-braced squares) into spinning
+      const fwd = it % 2 === 0;
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[fwd ? i : lines.length - 1 - i];
         let rest = l.rest;
         if (l.muscle) {
           rest = l.rest * (1 + params.waveAmp * ramp * muscleValue(l.muscle));
         }
+        // muscles stay rigid (they drive the motion); plain lines can stretch
+        const k = l.muscle ? 1 : iterK;
         const dx = l.b.x - l.a.x;
         const dy = l.b.y - l.a.y;
         const d = Math.hypot(dx, dy) || 0.0001;
-        const diff = (d - rest) / d * 0.5;
+        const diff = (d - rest) / d * 0.5 * k;
         l.a.x += dx * diff;
         l.a.y += dy * diff;
         l.b.x -= dx * diff;
