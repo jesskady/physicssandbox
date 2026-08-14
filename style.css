@@ -112,10 +112,33 @@ button {
   letter-spacing: 1px;
 }
 
-button:hover { background: #000; color: #fff; }
+/* Hover only on devices that actually have a pointer that can hover — on
+   touch, :hover applies on tap and has nothing to make it un-apply, so a
+   tapped button stays black. :active covers the press-feedback there instead. */
+@media (hover: hover) {
+  button:hover { background: #000; color: #fff; }
+}
+button:active { background: #000; color: #fff; }
+
+button:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
 
 #play-btn.playing { background: #000; color: #fff; }
 
 #clear-btn { margin-top: auto; border-width: 1px; font-size: 11px; }
 
 #mode-btn { border-width: 1px; font-size: 12px; padding: 6px; }
+
+#history-controls {
+  display: flex;
+  gap: 8px;
+}
+
+#history-controls button {
+  flex: 1;
+  border-width: 1px;
+  font-size: 12px;
+  padding: 6px;
+}

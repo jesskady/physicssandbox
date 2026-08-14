@@ -20,7 +20,7 @@ const TWO_PI = Math.PI * 2;
 const HIGHLIGHT = "#0a0";
 
 // ---------- State ----------
-let dots = [];   // {x, y, px, py, bx, by}
+let dots = [];   // {id, x, y, px, py, bx, by}
 let lines = [];  // {a, b, rest, muscle: null | {phase: 0..1, amp: 0..1}}
 let mode = "build";  // "build" | "play"
 let waveT = 0;       // wave phase offset, advances during play
@@ -29,6 +29,7 @@ let hoveredMuscleLine = null;  // line whose muscle is hovered (either canvas)
 let selectedMuscleLine = null; // just-added muscle, stays green until deselected
 let pendingLine = null;        // un-muscled line under cursor — shows ghost muscle
 let hoveredDot = null;         // dot under cursor: line-drag origin or destination
+let dotIdSeq = 0;              // stable ids so undo/redo can rebuild a/b references
 
 // select mode
 let editMode = "add";          // "add" | "select" (build-time editing tool)
@@ -37,9 +38,10 @@ let boxSelect = null;          // {x0,y0,x1,y1} rubber-band rectangle in progres
 let dragGroup = null;          // {lastX,lastY} dragging the selection
 
 // interaction state
-let dragLineFrom = null;  // dot we started a line-drag from
-let dragMoveDot = null;   // dot being moved (shift+drag)
-let dragWaveLine = null;  // line whose wave-dot is being dragged
+let dragLineFrom = null;    // dot we started a line-drag from
+let dragMoveDot = null;     // dot being moved (shift+drag)
+let dragWaveLine = null;    // line whose wave-dot is being dragged
+let dragWaveLineStart = null; // {px, py} at the start of a wave-dot drag, to detect a real change
 let mousePos = { x: 0, y: 0 };
 let downPos = null;
 
@@ -70,6 +72,107 @@ function waveSize() {
 
 // ---------- UI bindings ----------
 function $(id) { return document.getElementById(id); }
+
+// ---------- History (undo/redo) ----------
+// Snapshot-based, unbounded: every committed edit stores a full copy of
+// dots/lines. Dots carry a stable id and lines reference ids (not object
+// identity) so a snapshot can rebuild fresh dot/line objects on restore.
+// Physics stepping during Play never calls pushHistory, so simulation
+// frames don't pollute the log — only build-mode edits do.
+let history = [snapshotState()];
+let historyIndex = 0;
+
+function snapshotState() {
+  return {
+    dots: dots.map(d => ({ id: d.id, x: d.x, y: d.y, px: d.px, py: d.py, bx: d.bx, by: d.by })),
+    lines: lines.map(l => ({
+      aId: l.a.id,
+      bId: l.b.id,
+      rest: l.rest,
+      muscle: l.muscle ? { px: l.muscle.px, py: l.muscle.py } : null,
+    })),
+  };
+}
+
+function restoreState(state) {
+  const byId = new Map();
+  dots = state.dots.map(d => {
+    const nd = { id: d.id, x: d.x, y: d.y, px: d.px, py: d.py, bx: d.bx, by: d.by };
+    byId.set(d.id, nd);
+    return nd;
+  });
+  lines = state.lines.map(l => ({
+    a: byId.get(l.aId),
+    b: byId.get(l.bId),
+    rest: l.rest,
+    muscle: l.muscle ? { px: l.muscle.px, py: l.muscle.py } : null,
+  }));
+  resetInteractionState();
+}
+
+// Restoring swaps in fresh dot/line objects, so anything still pointing at
+// the old ones (hover, selection, in-progress drags) has to be dropped.
+function resetInteractionState() {
+  hoveredMuscleLine = null;
+  selectedMuscleLine = null;
+  pendingLine = null;
+  hoveredDot = null;
+  selectedDots = new Set();
+  boxSelect = null;
+  dragGroup = null;
+  dragLineFrom = null;
+  dragMoveDot = null;
+  dragWaveLine = null;
+  dragWaveLineStart = null;
+  downPos = null;
+}
+
+function pushHistory() {
+  history = history.slice(0, historyIndex + 1);
+  history.push(snapshotState());
+  historyIndex = history.length - 1;
+  updateHistoryButtons();
+}
+
+function undo() {
+  if (historyIndex <= 0) return;
+  if (mode === "play") stopPlay();
+  historyIndex--;
+  restoreState(history[historyIndex]);
+  updateHistoryButtons();
+}
+
+function redo() {
+  if (historyIndex >= history.length - 1) return;
+  if (mode === "play") stopPlay();
+  historyIndex++;
+  restoreState(history[historyIndex]);
+  updateHistoryButtons();
+}
+
+const undoBtn = $("undo-btn");
+const redoBtn = $("redo-btn");
+function updateHistoryButtons() {
+  undoBtn.disabled = historyIndex <= 0;
+  redoBtn.disabled = historyIndex >= history.length - 1;
+}
+updateHistoryButtons();
+undoBtn.addEventListener("click", undo);
+redoBtn.addEventListener("click", redo);
+
+window.addEventListener("keydown", (e) => {
+  const tag = document.activeElement && document.activeElement.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA") return;  // don't hijack min/max box editing
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const key = e.key.toLowerCase();
+  if (key === "z") {
+    e.preventDefault();
+    e.shiftKey ? redo() : undo();
+  } else if (key === "y") {
+    e.preventDefault();
+    redo();
+  }
+});
 
 function bindSlider(id, key, minDef, maxDef, decimals, hasMinMax = true) {
   const slider = $(id);
@@ -119,14 +222,11 @@ modeBtn.addEventListener("click", () => {
 
 $("clear-btn").addEventListener("click", () => {
   if (mode === "play") stopPlay();
+  if (dots.length === 0 && lines.length === 0) return;  // nothing to clear or undo
   dots = [];
   lines = [];
-  hoveredMuscleLine = null;
-  selectedMuscleLine = null;
-  pendingLine = null;
-  selectedDots = new Set();
-  boxSelect = null;
-  dragGroup = null;
+  resetInteractionState();
+  pushHistory();
 });
 
 function startPlay() {
@@ -257,7 +357,7 @@ playCanvas.addEventListener("mouseup", (e) => {
   const p = canvasPos(e, playCanvas);
   const moved = downPos && Math.hypot(p.x - downPos.x, p.y - downPos.y) > 4;
 
-  if (dragGroup) { dragGroup = null; downPos = null; return; }
+  if (dragGroup) { if (moved) pushHistory(); dragGroup = null; downPos = null; return; }
   if (boxSelect) {
     const x0 = Math.min(boxSelect.x0, boxSelect.x1), x1 = Math.max(boxSelect.x0, boxSelect.x1);
     const y0 = Math.min(boxSelect.y0, boxSelect.y1), y1 = Math.max(boxSelect.y0, boxSelect.y1);
@@ -272,12 +372,13 @@ playCanvas.addEventListener("mouseup", (e) => {
   }
   if (editMode === "select") { downPos = null; return; }
 
-  if (dragMoveDot) { dragMoveDot = null; downPos = null; return; }
+  if (dragMoveDot) { if (moved) pushHistory(); dragMoveDot = null; downPos = null; return; }
 
   if (dragLineFrom) {
     const target = dotAt(p);
     if (target && target !== dragLineFrom && moved && !connected(dragLineFrom, target)) {
       lines.push({ a: dragLineFrom, b: target, rest: dist(dragLineFrom, target), muscle: null });
+      pushHistory();
     }
     dragLineFrom = null;
     if (moved) { downPos = null; return; }
@@ -295,6 +396,7 @@ playCanvas.addEventListener("mouseup", (e) => {
     if (free) {
       free.muscle = { px: 0.5, py: 0.5 };  // wave dot starts at menu center
       selectedMuscleLine = free;
+      pushHistory();
     } else {
       selectedMuscleLine = near[0];        // clicking a muscled line selects it
     }
@@ -302,8 +404,9 @@ playCanvas.addEventListener("mouseup", (e) => {
     return;
   }
   if (!dotAt(p)) {
-    dots.push({ x: p.x, y: p.y, px: p.x, py: p.y, bx: p.x, by: p.y });
+    dots.push({ id: dotIdSeq++, x: p.x, y: p.y, px: p.x, py: p.y, bx: p.x, by: p.y });
     selectedMuscleLine = null;
+    pushHistory();
   }
   downPos = null;
 });
@@ -324,18 +427,21 @@ playCanvas.addEventListener("contextmenu", (e) => {
   if (mode !== "build") return;
   const p = canvasPos(e, playCanvas);
   const d = dotAt(p);
+  let changed = false;
   if (d) {
     dots = dots.filter(x => x !== d);
     lines = lines.filter(l => l.a !== d && l.b !== d);
     selectedDots.delete(d);
+    changed = true;
   } else {
     const near = linesNear(p);
     const muscled = near.find(l => l.muscle);
-    if (muscled) muscled.muscle = null;
-    else if (near.length) lines = lines.filter(x => x !== near[0]);
+    if (muscled) { muscled.muscle = null; changed = true; }
+    else if (near.length) { lines = lines.filter(x => x !== near[0]); changed = true; }
   }
   if (!lines.includes(selectedMuscleLine)) selectedMuscleLine = null;
   if (selectedMuscleLine && !selectedMuscleLine.muscle) selectedMuscleLine = null;
+  if (changed) pushHistory();
 });
 
 // ---------- Wave-menu interaction ----------
@@ -371,7 +477,10 @@ waveCanvas.addEventListener("mousedown", (e) => {
   if (e.button !== 0) return;
   const p = canvasPos(e, waveCanvas);
   dragWaveLine = waveDotAt(p);
-  if (dragWaveLine) selectedMuscleLine = dragWaveLine;
+  if (dragWaveLine) {
+    selectedMuscleLine = dragWaveLine;
+    dragWaveLineStart = { px: dragWaveLine.muscle.px, py: dragWaveLine.muscle.py };
+  }
 });
 
 waveCanvas.addEventListener("mousemove", (e) => {
@@ -386,9 +495,17 @@ waveCanvas.addEventListener("mousemove", (e) => {
   }
 });
 
-waveCanvas.addEventListener("mouseup", () => { dragWaveLine = null; });
+waveCanvas.addEventListener("mouseup", () => {
+  if (dragWaveLine && dragWaveLineStart) {
+    const m = dragWaveLine.muscle;
+    if (m.px !== dragWaveLineStart.px || m.py !== dragWaveLineStart.py) pushHistory();
+  }
+  dragWaveLine = null;
+  dragWaveLineStart = null;
+});
 waveCanvas.addEventListener("mouseleave", () => {
   dragWaveLine = null;
+  dragWaveLineStart = null;
   hoveredMuscleLine = null;
 });
 
