@@ -29,6 +29,11 @@ Open `index.html` in a browser — no build step, no dependencies.
 
 Hovering a muscle highlights its wave-menu dot in green, and vice versa.
 
+**Select mode** (Mode button in the right panel): drag dots freely without
+Shift; drag on empty space to rubber-band a box around multiple dots; then
+dragging any selected dot moves the whole selection together. Click empty
+space to deselect. Toggle back to Add mode to place dots/lines/muscles.
+
 ## Physics
 
 Custom Verlet integration with iterative distance constraints (no engine

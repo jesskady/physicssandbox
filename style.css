@@ -117,3 +117,5 @@ button:hover { background: #000; color: #fff; }
 #play-btn.playing { background: #000; color: #fff; }
 
 #clear-btn { margin-top: auto; border-width: 1px; font-size: 11px; }
+
+#mode-btn { border-width: 1px; font-size: 12px; padding: 6px; }

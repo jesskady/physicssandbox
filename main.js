@@ -30,6 +30,12 @@ let selectedMuscleLine = null; // just-added muscle, stays green until deselecte
 let pendingLine = null;        // un-muscled line under cursor — shows ghost muscle
 let hoveredDot = null;         // dot under cursor: line-drag origin or destination
 
+// select mode
+let editMode = "add";          // "add" | "select" (build-time editing tool)
+let selectedDots = new Set();  // multi-selected dots (select mode)
+let boxSelect = null;          // {x0,y0,x1,y1} rubber-band rectangle in progress
+let dragGroup = null;          // {lastX,lastY} dragging the selection
+
 // interaction state
 let dragLineFrom = null;  // dot we started a line-drag from
 let dragMoveDot = null;   // dot being moved (shift+drag)
@@ -100,6 +106,17 @@ bindSlider("wave-amp", "waveAmp", 0, 0.6, 3);
 const playBtn = $("play-btn");
 playBtn.addEventListener("click", () => (mode === "build" ? startPlay() : stopPlay()));
 
+const modeBtn = $("mode-btn");
+modeBtn.addEventListener("click", () => {
+  editMode = editMode === "add" ? "select" : "add";
+  modeBtn.textContent = editMode === "add" ? "Mode: Add" : "Mode: Select";
+  selectedDots = new Set();
+  boxSelect = null;
+  dragGroup = null;
+  dragLineFrom = null;
+  dragMoveDot = null;
+});
+
 $("clear-btn").addEventListener("click", () => {
   if (mode === "play") stopPlay();
   dots = [];
@@ -107,6 +124,9 @@ $("clear-btn").addEventListener("click", () => {
   hoveredMuscleLine = null;
   selectedMuscleLine = null;
   pendingLine = null;
+  selectedDots = new Set();
+  boxSelect = null;
+  dragGroup = null;
 });
 
 function startPlay() {
@@ -179,6 +199,16 @@ playCanvas.addEventListener("mousedown", (e) => {
   downPos = p;
   if (mode !== "build") return;
   const d = dotAt(p);
+  if (editMode === "select") {
+    if (d) {
+      // dragging any selected dot moves the whole selection with it
+      if (!selectedDots.has(d)) selectedDots = new Set([d]);
+      dragGroup = { lastX: p.x, lastY: p.y };
+    } else {
+      boxSelect = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+    }
+    return;
+  }
   if (d) {
     if (e.shiftKey) dragMoveDot = d;
     else dragLineFrom = d;
@@ -191,6 +221,18 @@ playCanvas.addEventListener("mousemove", (e) => {
   if (dragMoveDot) {
     dragMoveDot.x = p.x;
     dragMoveDot.y = p.y;
+  }
+  if (dragGroup) {
+    const dx = p.x - dragGroup.lastX, dy = p.y - dragGroup.lastY;
+    for (const d of selectedDots) { d.x += dx; d.y += dy; }
+    dragGroup.lastX = p.x;
+    dragGroup.lastY = p.y;
+    return;
+  }
+  if (boxSelect) {
+    boxSelect.x1 = p.x;
+    boxSelect.y1 = p.y;
+    return;
   }
   // hover: a dot lights up as a line-drag origin (or destination mid-drag);
   // anywhere on a muscled line highlights its muscle; a bare line previews
@@ -206,7 +248,7 @@ playCanvas.addEventListener("mousemove", (e) => {
     const near = linesNear(p);
     const muscled = near.find(l => l.muscle);
     if (muscled) hoveredMuscleLine = muscled;
-    else if (mode === "build" && near.length) pendingLine = near[0];
+    else if (mode === "build" && editMode === "add" && near.length) pendingLine = near[0];
   }
 });
 
@@ -214,6 +256,21 @@ playCanvas.addEventListener("mouseup", (e) => {
   if (e.button !== 0) return;
   const p = canvasPos(e, playCanvas);
   const moved = downPos && Math.hypot(p.x - downPos.x, p.y - downPos.y) > 4;
+
+  if (dragGroup) { dragGroup = null; downPos = null; return; }
+  if (boxSelect) {
+    const x0 = Math.min(boxSelect.x0, boxSelect.x1), x1 = Math.max(boxSelect.x0, boxSelect.x1);
+    const y0 = Math.min(boxSelect.y0, boxSelect.y1), y1 = Math.max(boxSelect.y0, boxSelect.y1);
+    if (x1 - x0 < 5 && y1 - y0 < 5) {
+      selectedDots = new Set();  // plain click on empty space deselects
+    } else {
+      selectedDots = new Set(dots.filter(d => d.x >= x0 && d.x <= x1 && d.y >= y0 && d.y <= y1));
+    }
+    boxSelect = null;
+    downPos = null;
+    return;
+  }
+  if (editMode === "select") { downPos = null; return; }
 
   if (dragMoveDot) { dragMoveDot = null; downPos = null; return; }
 
@@ -257,6 +314,8 @@ playCanvas.addEventListener("mouseleave", () => {
   hoveredMuscleLine = null;
   pendingLine = null;
   hoveredDot = null;
+  dragGroup = null;
+  boxSelect = null;
 });
 
 // right-click delete: dot (and its lines) > muscle > line
@@ -268,6 +327,7 @@ playCanvas.addEventListener("contextmenu", (e) => {
   if (d) {
     dots = dots.filter(x => x !== d);
     lines = lines.filter(l => l.a !== d && l.b !== d);
+    selectedDots.delete(d);
   } else {
     const near = linesNear(p);
     const muscled = near.find(l => l.muscle);
@@ -491,14 +551,28 @@ function drawPlay() {
     pctx.beginPath();
     pctx.arc(d.x, d.y, DOT_R, 0, TWO_PI);
     pctx.fill();
-    if (d === hoveredDot && dragTargetOk) {
-      // ring the destination dot: release here to finish the line
+    if ((d === hoveredDot && dragTargetOk) || selectedDots.has(d)) {
+      // ring: valid line destination, or part of the multi-selection
       pctx.strokeStyle = HIGHLIGHT;
       pctx.lineWidth = 2;
       pctx.beginPath();
       pctx.arc(d.x, d.y, DOT_R + 4, 0, TWO_PI);
       pctx.stroke();
     }
+  }
+
+  // rubber-band selection box
+  if (boxSelect) {
+    pctx.save();
+    pctx.setLineDash([4, 4]);
+    pctx.strokeStyle = "#555";
+    pctx.lineWidth = 1;
+    pctx.strokeRect(
+      Math.min(boxSelect.x0, boxSelect.x1),
+      Math.min(boxSelect.y0, boxSelect.y1),
+      Math.abs(boxSelect.x1 - boxSelect.x0),
+      Math.abs(boxSelect.y1 - boxSelect.y0));
+    pctx.restore();
   }
 }
 
