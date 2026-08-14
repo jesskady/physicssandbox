@@ -1,0 +1,117 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  background: #fff;
+  color: #000;
+  font-family: "Segoe UI", Arial, sans-serif;
+  overflow: hidden;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 1fr 2fr 1fr;
+  height: 100vh;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 10px;
+  border: 1px solid #000;
+  overflow-y: auto;
+}
+
+.panel h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  border-bottom: 1px solid #000;
+  padding-bottom: 4px;
+}
+
+#center-panel {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid #000;
+  border-bottom: 1px solid #000;
+}
+
+#play-canvas {
+  flex: 1;
+  width: 100%;
+  display: block;
+  cursor: crosshair;
+}
+
+#help {
+  font-size: 11px;
+  color: #555;
+  text-align: center;
+  padding: 4px;
+  border-top: 1px solid #000;
+  user-select: none;
+}
+
+#wave-canvas {
+  flex: 1;
+  min-height: 200px;
+  width: 100%;
+  border: 1px solid #000;
+  display: block;
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.control label {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.control label span {
+  float: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.control input[type="range"] {
+  width: 100%;
+  accent-color: #000;
+}
+
+.minmax {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.minmax input {
+  width: 50%;
+  font-size: 11px;
+  padding: 2px 4px;
+  border: 1px solid #000;
+  background: #fff;
+  color: #000;
+}
+
+button {
+  padding: 10px;
+  font-size: 14px;
+  background: #fff;
+  color: #000;
+  border: 2px solid #000;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+button:hover { background: #000; color: #fff; }
+
+#play-btn.playing { background: #000; color: #fff; }
+
+#clear-btn { margin-top: auto; border-width: 1px; font-size: 11px; }
