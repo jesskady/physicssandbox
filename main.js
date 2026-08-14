@@ -28,6 +28,7 @@ let playTime = 0;    // seconds since Play was pressed
 let hoveredMuscleLine = null;  // line whose muscle is hovered (either canvas)
 let selectedMuscleLine = null; // just-added muscle, stays green until deselected
 let pendingLine = null;        // un-muscled line under cursor — shows ghost muscle
+let hoveredDot = null;         // dot under cursor: line-drag origin or destination
 
 // interaction state
 let dragLineFrom = null;  // dot we started a line-drag from
@@ -188,15 +189,21 @@ playCanvas.addEventListener("mousemove", (e) => {
     dragMoveDot.x = p.x;
     dragMoveDot.y = p.y;
   }
-  // hover: anywhere on a muscled line highlights its muscle; anywhere on a
-  // bare line previews a pending muscle
+  // hover: a dot lights up as a line-drag origin (or destination mid-drag);
+  // anywhere on a muscled line highlights its muscle; a bare line previews
+  // a pending muscle
+  hoveredDot = null;
+  if (mode === "build" && !dragMoveDot) {
+    const d = dotAt(p);
+    if (d && d !== dragLineFrom) hoveredDot = d;
+  }
   hoveredMuscleLine = null;
   pendingLine = null;
-  if (!dragMoveDot && !dragLineFrom) {
+  if (!dragMoveDot && !dragLineFrom && !hoveredDot) {
     const near = linesNear(p);
     const muscled = near.find(l => l.muscle);
     if (muscled) hoveredMuscleLine = muscled;
-    else if (mode === "build" && near.length && !dotAt(p)) pendingLine = near[0];
+    else if (mode === "build" && near.length) pendingLine = near[0];
   }
 });
 
@@ -250,6 +257,7 @@ playCanvas.addEventListener("mouseleave", () => {
   dragMoveDot = null;
   hoveredMuscleLine = null;
   pendingLine = null;
+  hoveredDot = null;
 });
 
 // right-click delete: dot (and its lines) > muscle > line
@@ -448,12 +456,21 @@ function drawPlay() {
     pctx.fill();
   }
 
-  // dots
+  // dots — green when ready to start a line, or as the drag's destination
   for (const d of dots) {
-    pctx.fillStyle = "#000";
+    const hot = d === hoveredDot || d === dragLineFrom;
+    pctx.fillStyle = hot ? HIGHLIGHT : "#000";
     pctx.beginPath();
     pctx.arc(d.x, d.y, DOT_R, 0, TWO_PI);
     pctx.fill();
+    if (dragLineFrom && d === hoveredDot) {
+      // ring the destination dot: release here to finish the line
+      pctx.strokeStyle = HIGHLIGHT;
+      pctx.lineWidth = 2;
+      pctx.beginPath();
+      pctx.arc(d.x, d.y, DOT_R + 4, 0, TWO_PI);
+      pctx.stroke();
+    }
   }
 }
 
