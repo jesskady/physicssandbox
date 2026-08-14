@@ -11,7 +11,9 @@ html, body {
 #app {
   display: grid;
   grid-template-columns: 1fr 2fr 1fr;
-  height: 100vh;
+  width: 75%;
+  height: 75vh;
+  margin: 0 auto;   /* pads left/right; bottom 25vh stays open */
 }
 
 .panel {

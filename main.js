@@ -12,6 +12,7 @@ const DOT_R = 7;          // dot draw/collision radius
 const MUSCLE_R = 9;       // muscle marker radius
 const HIT_R = 12;         // click hit radius
 const DAMPING = 0.995;    // velocity damping per substep
+const MUSCLE_RAMP = 1.0;  // seconds to ease muscles in after Play, avoids a start-up jolt
 const SUBSTEPS = 4;
 const CONSTRAINT_ITERS = 8;
 const TWO_PI = Math.PI * 2;
@@ -22,6 +23,7 @@ let dots = [];   // {x, y, px, py, bx, by}
 let lines = [];  // {a, b, rest, muscle: null | {phase: 0..1, amp: 0..1}}
 let mode = "build";  // "build" | "play"
 let waveT = 0;       // wave phase offset, advances during play
+let playTime = 0;    // seconds since Play was pressed
 let hoveredMuscleLine = null; // line whose muscle is hovered (either canvas)
 
 // interaction state
@@ -102,6 +104,7 @@ $("clear-btn").addEventListener("click", () => {
 function startPlay() {
   mode = "play";
   waveT = 0;
+  playTime = 0;
   playBtn.textContent = "■ Stop";
   playBtn.classList.add("playing");
   for (const d of dots) {
@@ -314,10 +317,13 @@ function physicsStep(dt) {
 
     // solve constraints
     for (let it = 0; it < CONSTRAINT_ITERS; it++) {
+      // ease muscles in after Play so structures don't jolt on the first frames
+      const r = Math.min(1, playTime / MUSCLE_RAMP);
+      const ramp = r * r * (3 - 2 * r);
       for (const l of lines) {
         let rest = l.rest;
         if (l.muscle) {
-          rest = l.rest * (1 + params.waveAmp * muscleValue(l.muscle));
+          rest = l.rest * (1 + params.waveAmp * ramp * muscleValue(l.muscle));
         }
         const dx = l.b.x - l.a.x;
         const dy = l.b.y - l.a.y;
@@ -466,6 +472,7 @@ function frame(t) {
   lastT = t;
   if (mode === "play") {
     waveT += params.waveSpeed * dt;
+    playTime += dt;
     physicsStep(dt);
   }
   drawPlay();
