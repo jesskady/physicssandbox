@@ -150,9 +150,11 @@ function lineAt(p) {
   return null;
 }
 
-// Current expansion factor for a muscle: -1 (most contracted) .. +1 (most expanded)
-function muscleSin(m) {
-  return Math.sin(m.phase * TWO_PI - waveT);
+// Modulation factor for a muscle, -1..+1. Its wave-menu dot is a FIXED control
+// point: vertical placement = phase within the wave period, horizontal placement
+// = signed strength (center = still, right = expands first, left = contracts first).
+function muscleValue(m) {
+  return (m.px - 0.5) * 2 * Math.sin(m.py * TWO_PI - waveT);
 }
 
 // ---------- Play-area interaction ----------
@@ -214,7 +216,7 @@ playCanvas.addEventListener("mouseup", (e) => {
   // simple click: add muscle if on a line middle, else place a dot
   const lm = lineMidAt(p);
   if (lm) {
-    if (!lm.muscle) lm.muscle = { phase: 0.5, amp: 0.6 };
+    if (!lm.muscle) lm.muscle = { px: 0.8, py: 0.5 };
     downPos = null;
     return;
   }
@@ -257,12 +259,8 @@ function waveGeom() {
 }
 
 function waveDotPos(line) {
-  const g = waveGeom();
-  const m = line.muscle;
-  return {
-    x: g.cx + g.ampPx * m.amp * muscleSin(m),
-    y: m.phase * g.h,
-  };
+  const { w, h } = waveSize();
+  return { x: line.muscle.px * w, y: line.muscle.py * h };
 }
 
 function waveDotAt(p) {
@@ -283,12 +281,10 @@ waveCanvas.addEventListener("mousedown", (e) => {
 waveCanvas.addEventListener("mousemove", (e) => {
   const p = canvasPos(e, waveCanvas);
   if (dragWaveLine) {
-    const g = waveGeom();
+    const { w, h } = waveSize();
     const m = dragWaveLine.muscle;
-    m.phase = Math.max(0, Math.min(1, p.y / g.h));                    // vertical = phase
-    if (g.ampPx > 1) {
-      m.amp = Math.max(0.05, Math.min(1, Math.abs(p.x - g.cx) / g.ampPx)); // horizontal = strength
-    }
+    m.px = Math.max(0, Math.min(1, p.x / w));
+    m.py = Math.max(0, Math.min(1, p.y / h));
   } else {
     hoveredMuscleLine = waveDotAt(p);
   }
@@ -321,7 +317,7 @@ function physicsStep(dt) {
       for (const l of lines) {
         let rest = l.rest;
         if (l.muscle) {
-          rest = l.rest * (1 + params.waveAmp * l.muscle.amp * muscleSin(l.muscle));
+          rest = l.rest * (1 + params.waveAmp * muscleValue(l.muscle));
         }
         const dx = l.b.x - l.a.x;
         const dy = l.b.y - l.a.y;

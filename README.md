@@ -25,7 +25,7 @@ Open `index.html` in a browser — no build step, no dependencies.
 | Add muscle | Click the middle of a line |
 | Move dot | Shift + drag the dot |
 | Delete dot / muscle / line | Right-click it |
-| Tune a muscle | Drag its dot on the wave menu — vertical sets its phase in the wave period, horizontal sets its strength |
+| Tune a muscle | Drag its dot anywhere on the wave menu. The dot is a fixed control point — it never moves on its own. Vertical placement sets its phase within the wave period; horizontal placement sets signed strength (center = no movement, right of center = expands first, left of center = contracts first) |
 
 Hovering a muscle highlights its wave-menu dot in green, and vice versa.
 
@@ -39,7 +39,8 @@ dependency):
 - **Lines** are distance constraints, solved 8 iterations × 4 substeps per
   frame, which keeps structures stable instead of exploding.
 - **Muscles** oscillate a line's rest length symmetrically about its center:
-  `rest × (1 + waveAmp × strength × sin(phase·2π − waveT))`.
+  `rest × (1 + waveAmp × (dotX − 0.5)·2 × sin(dotY·2π − waveT))`, where
+  (dotX, dotY) is the muscle's fixed dot position on the wave menu (0..1).
 - **Rubber** is wall restitution (0 = dead stop, 1 = full bounce), applied by
   reflecting the implicit Verlet velocity at contact. The floor also applies a
   little friction so structures can push against it and walk.
