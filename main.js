@@ -4,10 +4,12 @@
 const params = {
   gravity: 900,      // px/s^2
   rubber: 0.4,       // wall restitution 0..1
+  friction: 0.4,     // floor/wall grip 0..1: fraction of slide velocity lost on contact
   stiffness: 0.6,    // non-muscle line rigidity 0..1; lower = stretchier frame
   waveSpeed: 3,      // rad/s — how fast the wave rolls
   waveAmp: 0.25,     // max fraction a muscle expands/contracts its line
   wallReverse: true, // flip wave direction when the structure hits a side wall
+  wallCooldown: 1.0, // s — minimum time between direction flips
 };
 
 const DOT_R = 7;          // dot draw/collision radius
@@ -28,7 +30,6 @@ let waveT = 0;       // wave phase offset, advances during play
 let waveDir = 1;     // +1 or -1; wall hits flip it when params.wallReverse is on
 let wasTouchingSide = false;  // side-wall contact last frame (edge trigger)
 let lastFlipTime = -Infinity; // playTime of the last flip (cooldown)
-const FLIP_COOLDOWN = 0.3;    // s — ignore re-hits right after a flip
 let playTime = 0;    // seconds since Play was pressed
 let hoveredMuscleLine = null;  // line whose muscle is hovered (either canvas)
 let selectedMuscleLine = null; // just-added muscle, stays green until deselected
@@ -207,6 +208,7 @@ function bindSlider(id, key, minDef, maxDef, decimals, hasMinMax = true) {
 
 bindSlider("gravity", "gravity", 0, 2000, 0);
 bindSlider("rubber", "rubber", 0, 1, 2, false);
+bindSlider("friction", "friction", 0, 1, 2, false);
 bindSlider("stiffness", "stiffness", 0.05, 1, 2, false);
 bindSlider("wave-speed", "waveSpeed", 0, 10, 2);
 bindSlider("wave-amp", "waveAmp", 0, 0.6, 3);
@@ -214,6 +216,14 @@ bindSlider("wave-amp", "waveAmp", 0, 0.6, 3);
 const wallReverseBox = $("wall-reverse");
 wallReverseBox.checked = params.wallReverse;
 wallReverseBox.addEventListener("change", () => { params.wallReverse = wallReverseBox.checked; });
+
+const wallCooldownBox = $("wall-cooldown");
+wallCooldownBox.value = params.wallCooldown;
+wallCooldownBox.addEventListener("change", () => {
+  const v = parseFloat(wallCooldownBox.value);
+  if (isFinite(v) && v >= 0) params.wallCooldown = v;
+  wallCooldownBox.value = params.wallCooldown;  // snap invalid input back
+});
 
 const playBtn = $("play-btn");
 playBtn.addEventListener("click", () => (mode === "build" ? startPlay() : stopPlay()));
@@ -768,11 +778,11 @@ function physicsStep(dt) {
 
   // wall reverse: flip the wave direction when the structure reaches a side
   // wall, so a walker turns around and heads back. Edge-triggered (contact
-  // must break before another flip) plus a short cooldown, so a structure
-  // leaning on the wall doesn't flip every frame.
+  // must break before another flip) plus a menu-settable cooldown, so a
+  // structure leaning or bouncing on the wall doesn't flip every frame.
   if (params.wallReverse) {
     const touching = dots.some(d => d.x <= DOT_R + 0.5 || d.x >= w - DOT_R - 0.5);
-    if (touching && !wasTouchingSide && playTime - lastFlipTime > FLIP_COOLDOWN) {
+    if (touching && !wasTouchingSide && playTime - lastFlipTime > params.wallCooldown) {
       waveDir = -waveDir;
       lastFlipTime = playTime;
     }
@@ -783,17 +793,11 @@ function physicsStep(dt) {
 function collideWalls(d, w, h) {
   const r = DOT_R;
   const e = params.rubber;
-  if (d.x < r)      { const vx = d.x - d.px; d.x = r;     d.px = d.x + vx * e; d.hit = true; }
-  if (d.x > w - r)  { const vx = d.x - d.px; d.x = w - r; d.px = d.x + vx * e; d.hit = true; }
-  if (d.y < r)      { const vy = d.y - d.py; d.y = r;     d.py = d.y + vy * e; d.hit = true; }
-  if (d.y > h - r)  {
-    const vy = d.y - d.py;
-    const vx = d.x - d.px;
-    d.y = h - r;
-    d.py = d.y + vy * e;
-    d.px = d.x - vx * 0.85; // ground friction
-    d.hit = true;
-  }
+  const keep = 1 - params.friction;  // slide velocity kept along the surface
+  if (d.x < r)      { const vx = d.x - d.px, vy = d.y - d.py; d.x = r;     d.px = d.x + vx * e; d.py = d.y - vy * keep; d.hit = true; }
+  if (d.x > w - r)  { const vx = d.x - d.px, vy = d.y - d.py; d.x = w - r; d.px = d.x + vx * e; d.py = d.y - vy * keep; d.hit = true; }
+  if (d.y < r)      { const vx = d.x - d.px, vy = d.y - d.py; d.y = r;     d.py = d.y + vy * e; d.px = d.x - vx * keep; d.hit = true; }
+  if (d.y > h - r)  { const vx = d.x - d.px, vy = d.y - d.py; d.y = h - r; d.py = d.y + vy * e; d.px = d.x - vx * keep; d.hit = true; }
 }
 
 // ---------- Rendering ----------

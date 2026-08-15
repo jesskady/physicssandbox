@@ -66,6 +66,10 @@
         <input type="range" id="rubber" min="0" max="1" step="0.01">
       </div>
       <div class="control">
+        <label>Friction <span id="friction-val"></span></label>
+        <input type="range" id="friction" min="0" max="1" step="0.01">
+      </div>
+      <div class="control">
         <label>Line Stiffness <span id="stiffness-val"></span></label>
         <input type="range" id="stiffness" min="0.05" max="1" step="0.01">
       </div>
@@ -73,6 +77,10 @@
         <label class="checkbox-label" title="During play, the wave reverses direction when the structure hits a side wall">
           <input type="checkbox" id="wall-reverse" checked>
           Reverse at side walls
+        </label>
+        <label class="inline-num" title="Minimum seconds between direction flips">
+          Reverse cooldown (s)
+          <input type="number" id="wall-cooldown" min="0" step="0.1">
         </label>
       </div>
     </div>

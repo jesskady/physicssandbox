@@ -100,6 +100,22 @@ html, body {
   height: 14px;
 }
 
+.control label.inline-num {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.inline-num input {
+  width: 60px;
+  font-size: 11px;
+  padding: 2px 4px;
+  border: 1px solid #000;
+  background: #fff;
+  color: #000;
+}
+
 .minmax {
   display: flex;
   gap: 6px;
