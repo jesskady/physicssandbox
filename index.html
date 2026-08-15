@@ -69,7 +69,21 @@
         <label>Line Stiffness <span id="stiffness-val"></span></label>
         <input type="range" id="stiffness" min="0.05" max="1" step="0.01">
       </div>
+      <div class="control">
+        <label class="checkbox-label" title="During play, the wave reverses direction when the structure hits a side wall">
+          <input type="checkbox" id="wall-reverse" checked>
+          Reverse at side walls
+        </label>
+      </div>
     </div>
+    <div id="list-tabs">
+      <button id="tab-dots" class="active">Dots</button>
+      <button id="tab-muscles">Muscles</button>
+    </div>
+    <div id="dot-list-head"><span>#</span><span>X</span><span>Y</span></div>
+    <div id="dot-list"></div>
+    <div id="muscle-list-head" hidden><span>#</span><span>X</span><span>Y</span></div>
+    <div id="muscle-list" hidden></div>
     <button id="clear-btn">Clear All</button>
   </div>
 

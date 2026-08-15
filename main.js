@@ -7,6 +7,7 @@ const params = {
   stiffness: 0.6,    // non-muscle line rigidity 0..1; lower = stretchier frame
   waveSpeed: 3,      // rad/s — how fast the wave rolls
   waveAmp: 0.25,     // max fraction a muscle expands/contracts its line
+  wallReverse: true, // flip wave direction when the structure hits a side wall
 };
 
 const DOT_R = 7;          // dot draw/collision radius
@@ -24,6 +25,10 @@ let dots = [];   // {id, x, y, px, py, bx, by}
 let lines = [];  // {a, b, rest, muscle: null | {phase: 0..1, amp: 0..1}}
 let mode = "build";  // "build" | "play"
 let waveT = 0;       // wave phase offset, advances during play
+let waveDir = 1;     // +1 or -1; wall hits flip it when params.wallReverse is on
+let wasTouchingSide = false;  // side-wall contact last frame (edge trigger)
+let lastFlipTime = -Infinity; // playTime of the last flip (cooldown)
+const FLIP_COOLDOWN = 0.3;    // s — ignore re-hits right after a flip
 let playTime = 0;    // seconds since Play was pressed
 let hoveredMuscleLine = null;  // line whose muscle is hovered (either canvas)
 let selectedMuscleLine = null; // just-added muscle, stays green until deselected
@@ -206,6 +211,10 @@ bindSlider("stiffness", "stiffness", 0.05, 1, 2, false);
 bindSlider("wave-speed", "waveSpeed", 0, 10, 2);
 bindSlider("wave-amp", "waveAmp", 0, 0.6, 3);
 
+const wallReverseBox = $("wall-reverse");
+wallReverseBox.checked = params.wallReverse;
+wallReverseBox.addEventListener("change", () => { params.wallReverse = wallReverseBox.checked; });
+
 const playBtn = $("play-btn");
 playBtn.addEventListener("click", () => (mode === "build" ? startPlay() : stopPlay()));
 
@@ -232,6 +241,9 @@ $("clear-btn").addEventListener("click", () => {
 function startPlay() {
   mode = "play";
   waveT = 0;
+  waveDir = 1;
+  wasTouchingSide = false;
+  lastFlipTime = -Infinity;
   playTime = 0;
   playBtn.textContent = "■ Stop";
   playBtn.classList.add("playing");
@@ -248,6 +260,162 @@ function stopPlay() {
   playBtn.classList.remove("playing");
   for (const d of dots) { d.x = d.bx; d.y = d.by; }
 }
+
+// ---------- Dot table ----------
+// One row per dot with live X/Y fields. Rows resolve their dot by id at event
+// time (never by captured object), since undo/redo swaps in fresh dot objects.
+const dotListEl = $("dot-list");
+let dotRows = new Map();  // id -> {row, xIn, yIn}
+let dotListKey = null;    // joined ids of the rows currently built
+
+function dotById(id) { return dots.find(d => d.id === id) || null; }
+
+function selectDotById(id) {
+  const d = dotById(id);
+  if (d) selectedDots = new Set([d]);
+}
+
+function rebuildDotList() {
+  dotRows = new Map();
+  dotListEl.innerHTML = "";
+  for (const dot of dots) {
+    const id = dot.id;
+    const row = document.createElement("div");
+    row.className = "dot-row";
+    const label = document.createElement("span");
+    label.textContent = id + 1;
+    const xIn = document.createElement("input");
+    const yIn = document.createElement("input");
+    for (const [inp, axis] of [[xIn, "x"], [yIn, "y"]]) {
+      inp.type = "number";
+      inp.step = "1";
+      inp.addEventListener("focus", () => selectDotById(id));
+      inp.addEventListener("input", () => {
+        const d = dotById(id);
+        const v = parseFloat(inp.value);
+        if (!d || !isFinite(v)) return;
+        d[axis] = v;
+        d["p" + axis] = v;                       // no velocity kick
+        if (mode === "build") d["b" + axis] = v; // build position only outside play
+      });
+      inp.addEventListener("change", () => { if (mode === "build") pushHistory(); });
+    }
+    row.addEventListener("click", () => selectDotById(id));
+    row.append(label, xIn, yIn);
+    dotListEl.append(row);
+    dotRows.set(id, { row, xIn, yIn });
+  }
+}
+
+function updateDotList() {
+  const key = dots.map(d => d.id).join(",");
+  if (key !== dotListKey) {
+    dotListKey = key;
+    rebuildDotList();
+  }
+  const active = document.activeElement;
+  for (const d of dots) {
+    const r = dotRows.get(d.id);
+    if (!r) continue;
+    const xv = String(Math.round(d.x)), yv = String(Math.round(d.y));
+    if (active !== r.xIn && r.xIn.value !== xv) r.xIn.value = xv;
+    if (active !== r.yIn && r.yIn.value !== yv) r.yIn.value = yv;
+    r.row.classList.toggle("selected", selectedDots.has(d));
+  }
+}
+
+// ---------- Muscle table ----------
+// One row per muscle, labeled by the dots its line connects. Both coordinates
+// display as -100..+100: X is signed strength (0 = center/still, + = expands
+// first, matching the wave menu's − / + sides); Y is height in the wave menu
+// (0 = the middle line, +100 = top, -100 = bottom). Internally px/py are 0..1
+// top-left based. Rows resolve their line by the dot-id pair, which survives
+// undo/redo rebuilds.
+const muscleListEl = $("muscle-list");
+let muscleRows = new Map();  // "aId-bId" -> {row, xIn, yIn}
+let muscleListKey = null;
+
+function muscleKey(l) { return l.a.id + "-" + l.b.id; }
+function muscleLineByKey(k) {
+  return lines.find(l => l.muscle && muscleKey(l) === k) || null;
+}
+function selectMuscleByKey(k) {
+  const l = muscleLineByKey(k);
+  if (l) selectedMuscleLine = l;
+}
+
+function rebuildMuscleList() {
+  muscleRows = new Map();
+  muscleListEl.innerHTML = "";
+  for (const line of lines) {
+    if (!line.muscle) continue;
+    const key = muscleKey(line);
+    const row = document.createElement("div");
+    row.className = "dot-row";
+    const label = document.createElement("span");
+    label.textContent = (line.a.id + 1) + "–" + (line.b.id + 1);
+    const xIn = document.createElement("input");
+    const yIn = document.createElement("input");
+    for (const inp of [xIn, yIn]) {
+      inp.type = "number";
+      inp.step = "1";
+      inp.min = -100;
+      inp.max = 100;
+      inp.addEventListener("focus", () => selectMuscleByKey(key));
+      inp.addEventListener("change", pushHistory);
+    }
+    xIn.addEventListener("input", () => {
+      const l = muscleLineByKey(key);
+      const v = parseFloat(xIn.value);
+      if (!l || !isFinite(v)) return;
+      l.muscle.px = (Math.max(-100, Math.min(100, v)) / 100 + 1) / 2;
+    });
+    yIn.addEventListener("input", () => {
+      const l = muscleLineByKey(key);
+      const v = parseFloat(yIn.value);
+      if (!l || !isFinite(v)) return;
+      l.muscle.py = 0.5 - Math.max(-100, Math.min(100, v)) / 200;
+    });
+    row.addEventListener("click", () => selectMuscleByKey(key));
+    row.append(label, xIn, yIn);
+    muscleListEl.append(row);
+    muscleRows.set(key, { row, xIn, yIn });
+  }
+}
+
+function updateMuscleList() {
+  const muscled = lines.filter(l => l.muscle);
+  const key = muscled.map(muscleKey).join(",");
+  if (key !== muscleListKey) {
+    muscleListKey = key;
+    rebuildMuscleList();
+  }
+  const active = document.activeElement;
+  for (const l of muscled) {
+    const r = muscleRows.get(muscleKey(l));
+    if (!r) continue;
+    const xv = String(Math.round((l.muscle.px - 0.5) * 200));
+    const yv = String(Math.round((0.5 - l.muscle.py) * 200));
+    if (active !== r.xIn && r.xIn.value !== xv) r.xIn.value = xv;
+    if (active !== r.yIn && r.yIn.value !== yv) r.yIn.value = yv;
+    r.row.classList.toggle("selected", l === selectedMuscleLine);
+  }
+}
+
+// ---------- List tabs ----------
+const tabDotsBtn = $("tab-dots");
+const tabMusclesBtn = $("tab-muscles");
+function setListTab(tab) {
+  const dotsOn = tab === "dots";
+  tabDotsBtn.classList.toggle("active", dotsOn);
+  tabMusclesBtn.classList.toggle("active", !dotsOn);
+  $("dot-list-head").hidden = !dotsOn;
+  dotListEl.hidden = !dotsOn;
+  $("muscle-list-head").hidden = dotsOn;
+  muscleListEl.hidden = dotsOn;
+}
+tabDotsBtn.addEventListener("click", () => setListTab("dots"));
+tabMusclesBtn.addEventListener("click", () => setListTab("muscles"));
 
 // ---------- Geometry helpers ----------
 function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y) || 0.0001; }
@@ -315,12 +483,53 @@ playCanvas.addEventListener("mousedown", (e) => {
   }
 });
 
+// Drags are tracked on window (not the canvas) so straying outside the box
+// mid-drag doesn't drop the operation — it ends only on button release.
+// Positions clamp to the canvas edges while outside.
+function playDragActive() { return !!(dragMoveDot || dragGroup || boxSelect || dragLineFrom); }
+function clampToPlay(p) {
+  const { w, h } = playSize();
+  return { x: Math.max(0, Math.min(w, p.x)), y: Math.max(0, Math.min(h, p.y)) };
+}
+
 playCanvas.addEventListener("mousemove", (e) => {
+  if (playDragActive()) return;  // window handler owns movement during drags
   const p = canvasPos(e, playCanvas);
+  mousePos = p;
+  // hover: a dot lights up as a line-drag origin; anywhere on a muscled line
+  // highlights its muscle; a bare line previews a pending muscle
+  hoveredDot = null;
+  if (mode === "build") {
+    const d = dotAt(p);
+    if (d) hoveredDot = d;
+  }
+  hoveredMuscleLine = null;
+  pendingLine = null;
+  if (!hoveredDot) {
+    const near = linesNear(p);
+    const muscled = near.find(l => l.muscle);
+    if (muscled) hoveredMuscleLine = muscled;
+    else if (mode === "build" && editMode === "add" && near.length) pendingLine = near[0];
+  }
+});
+
+window.addEventListener("mousemove", (e) => {
+  if (dragWaveLine) {
+    const p = canvasPos(e, waveCanvas);
+    const { w, h } = waveSize();
+    const m = dragWaveLine.muscle;
+    m.px = Math.max(0, Math.min(1, p.x / w));
+    m.py = Math.max(0, Math.min(1, p.y / h));
+    return;
+  }
+  if (!playDragActive()) return;
+  const raw = canvasPos(e, playCanvas);
+  const p = clampToPlay(raw);
   mousePos = p;
   if (dragMoveDot) {
     dragMoveDot.x = p.x;
     dragMoveDot.y = p.y;
+    return;
   }
   if (dragGroup) {
     const dx = p.x - dragGroup.lastX, dy = p.y - dragGroup.lastY;
@@ -334,27 +543,26 @@ playCanvas.addEventListener("mousemove", (e) => {
     boxSelect.y1 = p.y;
     return;
   }
-  // hover: a dot lights up as a line-drag origin (or destination mid-drag);
-  // anywhere on a muscled line highlights its muscle; a bare line previews
-  // a pending muscle
+  // dragLineFrom: track the destination dot (unclamped, so a dot near the
+  // edge still catches a cursor slightly outside)
   hoveredDot = null;
-  if (mode === "build" && !dragMoveDot) {
-    const d = dotAt(p);
-    if (d && d !== dragLineFrom) hoveredDot = d;
-  }
-  hoveredMuscleLine = null;
-  pendingLine = null;
-  if (!dragMoveDot && !dragLineFrom && !hoveredDot) {
-    const near = linesNear(p);
-    const muscled = near.find(l => l.muscle);
-    if (muscled) hoveredMuscleLine = muscled;
-    else if (mode === "build" && editMode === "add" && near.length) pendingLine = near[0];
-  }
+  const d = dotAt(raw);
+  if (d && d !== dragLineFrom) hoveredDot = d;
 });
 
-playCanvas.addEventListener("mouseup", (e) => {
+window.addEventListener("mouseup", (e) => {
   if (e.button !== 0) return;
-  const p = canvasPos(e, playCanvas);
+  if (dragWaveLine) {
+    if (dragWaveLineStart) {
+      const m = dragWaveLine.muscle;
+      if (m.px !== dragWaveLineStart.px || m.py !== dragWaveLineStart.py) pushHistory();
+    }
+    dragWaveLine = null;
+    dragWaveLineStart = null;
+    return;
+  }
+  if (!downPos) return;  // gesture didn't start on the play canvas
+  const p = clampToPlay(canvasPos(e, playCanvas));
   const moved = downPos && Math.hypot(p.x - downPos.x, p.y - downPos.y) > 4;
 
   if (dragGroup) { if (moved) pushHistory(); dragGroup = null; downPos = null; return; }
@@ -381,6 +589,7 @@ playCanvas.addEventListener("mouseup", (e) => {
       pushHistory();
     }
     dragLineFrom = null;
+    hoveredDot = null;  // drag-destination highlight; stale if released off-canvas
     if (moved) { downPos = null; return; }
     // fall through: an in-place click on a dot does nothing else
     downPos = null;
@@ -412,13 +621,10 @@ playCanvas.addEventListener("mouseup", (e) => {
 });
 
 playCanvas.addEventListener("mouseleave", () => {
-  dragLineFrom = null;
-  dragMoveDot = null;
+  // clear hover feedback only — active drags survive leaving the canvas
   hoveredMuscleLine = null;
   pendingLine = null;
-  hoveredDot = null;
-  dragGroup = null;
-  boxSelect = null;
+  if (!dragLineFrom) hoveredDot = null;
 });
 
 // right-click delete: dot (and its lines) > muscle > line
@@ -484,29 +690,13 @@ waveCanvas.addEventListener("mousedown", (e) => {
 });
 
 waveCanvas.addEventListener("mousemove", (e) => {
-  const p = canvasPos(e, waveCanvas);
-  if (dragWaveLine) {
-    const { w, h } = waveSize();
-    const m = dragWaveLine.muscle;
-    m.px = Math.max(0, Math.min(1, p.x / w));
-    m.py = Math.max(0, Math.min(1, p.y / h));
-  } else {
-    hoveredMuscleLine = waveDotAt(p);
-  }
+  if (dragWaveLine) return;  // window handler owns movement during drags
+  hoveredMuscleLine = waveDotAt(canvasPos(e, waveCanvas));
 });
 
-waveCanvas.addEventListener("mouseup", () => {
-  if (dragWaveLine && dragWaveLineStart) {
-    const m = dragWaveLine.muscle;
-    if (m.px !== dragWaveLineStart.px || m.py !== dragWaveLineStart.py) pushHistory();
-  }
-  dragWaveLine = null;
-  dragWaveLineStart = null;
-});
 waveCanvas.addEventListener("mouseleave", () => {
-  dragWaveLine = null;
-  dragWaveLineStart = null;
-  hoveredMuscleLine = null;
+  // clear hover feedback only — an active wave-dot drag survives leaving
+  if (!dragWaveLine) hoveredMuscleLine = null;
 });
 
 // ---------- Physics (Verlet + distance constraints) ----------
@@ -574,6 +764,19 @@ function physicsStep(dt) {
         if (d.x <= band && vx > 0) d.px = d.x - vx * e;
       }
     }
+  }
+
+  // wall reverse: flip the wave direction when the structure reaches a side
+  // wall, so a walker turns around and heads back. Edge-triggered (contact
+  // must break before another flip) plus a short cooldown, so a structure
+  // leaning on the wall doesn't flip every frame.
+  if (params.wallReverse) {
+    const touching = dots.some(d => d.x <= DOT_R + 0.5 || d.x >= w - DOT_R - 0.5);
+    if (touching && !wasTouchingSide && playTime - lastFlipTime > FLIP_COOLDOWN) {
+      waveDir = -waveDir;
+      lastFlipTime = playTime;
+    }
+    wasTouchingSide = touching;
   }
 }
 
@@ -697,13 +900,25 @@ function drawWave() {
   const g = waveGeom();
   wctx.clearRect(0, 0, g.w, g.h);
 
-  // center axis
-  wctx.strokeStyle = "#ccc";
+  // ruler grid — horizontal guides at every eighth: middle darkest, quarters
+  // medium, eighths light; vertical guides at every quarter (center axis included)
   wctx.lineWidth = 1;
-  wctx.beginPath();
-  wctx.moveTo(g.cx, 0);
-  wctx.lineTo(g.cx, g.h);
-  wctx.stroke();
+  for (let i = 1; i < 8; i++) {
+    const y = (i / 8) * g.h;
+    wctx.strokeStyle = i === 4 ? "#999" : (i % 2 === 0 ? "#ccc" : "#eee");
+    wctx.beginPath();
+    wctx.moveTo(0, y);
+    wctx.lineTo(g.w, y);
+    wctx.stroke();
+  }
+  wctx.strokeStyle = "#ccc";
+  for (let i = 1; i < 4; i++) {
+    const x = (i / 4) * g.w;
+    wctx.beginPath();
+    wctx.moveTo(x, 0);
+    wctx.lineTo(x, g.h);
+    wctx.stroke();
+  }
 
   // the wave: x = cx + A*sin(2π·(y/h) − waveT), rolls downward during play
   wctx.strokeStyle = "#000";
@@ -749,10 +964,12 @@ function frame(t) {
   const dt = Math.min(0.033, (t - lastT) / 1000 || 0.016);
   lastT = t;
   if (mode === "play") {
-    waveT += params.waveSpeed * dt;
+    waveT += waveDir * params.waveSpeed * dt;
     playTime += dt;
     physicsStep(dt);
   }
+  updateDotList();
+  updateMuscleList();
   drawPlay();
   drawWave();
   requestAnimationFrame(frame);
