@@ -51,6 +51,10 @@
       <button id="undo-btn" title="Undo (Ctrl+Z)">↶ Undo</button>
       <button id="redo-btn" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
     </div>
+    <div id="file-controls">
+      <button id="save-btn" title="Download the current design as a file">Save</button>
+      <button id="load-btn" title="Load a design from a file">Load</button>
+    </div>
     <h2>Physics</h2>
     <div class="controls">
       <div class="control">
@@ -96,6 +100,18 @@
   </div>
 
 </div>
+
+<dialog id="modal">
+  <h3 id="modal-title"></h3>
+  <p id="modal-text"></p>
+  <input id="modal-input" type="text" spellcheck="false">
+  <div id="modal-buttons">
+    <button id="modal-cancel">Cancel</button>
+    <button id="modal-ok">OK</button>
+  </div>
+</dialog>
+<input type="file" id="load-file" accept=".json,application/json" hidden>
+
 <script src="main.js"></script>
 </body>
 </html>

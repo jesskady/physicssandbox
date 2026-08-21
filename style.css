@@ -228,14 +228,64 @@ button:disabled {
 
 #mode-btn { border-width: 1px; font-size: 12px; padding: 6px; }
 
-#history-controls {
+#history-controls, #file-controls {
   display: flex;
   gap: 8px;
 }
 
-#history-controls button {
+#history-controls button, #file-controls button {
   flex: 1;
   border-width: 1px;
   font-size: 12px;
   padding: 6px;
+}
+
+dialog#modal {
+  border: 2px solid #000;
+  background: #fff;
+  color: #000;
+  padding: 16px;
+  min-width: 280px;
+  max-width: 360px;
+  font-family: "Segoe UI", Arial, sans-serif;
+}
+
+dialog#modal::backdrop { background: rgba(0, 0, 0, 0.35); }
+
+#modal h3 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  border-bottom: 1px solid #000;
+  padding-bottom: 4px;
+  margin-bottom: 10px;
+}
+
+#modal p {
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+#modal p[hidden] { display: none; }
+
+#modal input {
+  width: 100%;
+  font-size: 12px;
+  padding: 4px;
+  border: 1px solid #000;
+  margin-bottom: 12px;
+}
+
+#modal input[hidden] { display: none; }
+
+#modal-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+#modal-buttons button {
+  border-width: 1px;
+  font-size: 12px;
+  padding: 6px 14px;
 }

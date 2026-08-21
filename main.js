@@ -195,6 +195,8 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+const paramUI = {};  // key -> function pushing params[key] back into its control (used by load)
+
 function bindSlider(id, key, minDef, maxDef, decimals, hasMinMax = true) {
   const slider = $(id);
   const label = $(id + "-val");
@@ -203,8 +205,10 @@ function bindSlider(id, key, minDef, maxDef, decimals, hasMinMax = true) {
   slider.value = params[key];
   const refresh = () => { label.textContent = Number(params[key]).toFixed(decimals); };
   slider.addEventListener("input", () => { params[key] = parseFloat(slider.value); refresh(); });
+  let minBox = null, maxBox = null;
   if (hasMinMax) {
-    const minBox = $(id + "-min"), maxBox = $(id + "-max");
+    minBox = $(id + "-min");
+    maxBox = $(id + "-max");
     minBox.value = minDef;
     maxBox.value = maxDef;
     minBox.addEventListener("change", () => {
@@ -218,6 +222,17 @@ function bindSlider(id, key, minDef, maxDef, decimals, hasMinMax = true) {
       refresh();
     });
   }
+  paramUI[key] = () => {
+    if (hasMinMax) {
+      // widen the slider's range so a loaded value outside it still shows
+      if (params[key] < parseFloat(slider.min)) { slider.min = params[key]; minBox.value = params[key]; }
+      if (params[key] > parseFloat(slider.max)) { slider.max = params[key]; maxBox.value = params[key]; }
+    } else {
+      params[key] = Math.max(minDef, Math.min(maxDef, params[key]));
+    }
+    slider.value = params[key];
+    refresh();
+  };
   refresh();
 }
 
@@ -239,6 +254,175 @@ wallCooldownBox.addEventListener("change", () => {
   if (isFinite(v) && v >= 0) params.wallCooldown = v;
   wallCooldownBox.value = params.wallCooldown;  // snap invalid input back
 });
+
+// ---------- Save / Load ----------
+// A design file is JSON: dot positions in world units, lines by dot id,
+// muscle control points (0..1), and all physics/wave settings. World units
+// plus the deterministic sim mean a shared file replays identically anywhere.
+const PARAM_KEYS = ["gravity", "rubber", "friction", "stiffness", "waveSpeed", "waveAmp", "wallReverse", "wallCooldown"];
+
+function serializeDesign() {
+  const p = {};
+  for (const k of PARAM_KEYS) p[k] = params[k];
+  return JSON.stringify({
+    app: "physicssandbox",
+    version: 1,
+    params: p,
+    // during play, dots are mid-simulation — save the build positions
+    dots: dots.map(d => (mode === "play"
+      ? { id: d.id, x: d.bx, y: d.by }
+      : { id: d.id, x: d.x, y: d.y })),
+    lines: lines.map(l => ({
+      a: l.a.id,
+      b: l.b.id,
+      muscle: l.muscle ? { px: l.muscle.px, py: l.muscle.py } : null,
+    })),
+  }, null, 2);
+}
+
+// Returns an error message, or null if the design is usable.
+function validateDesign(d) {
+  if (!d || typeof d !== "object") return "That file isn't a design.";
+  if (d.app !== "physicssandbox") return "That file isn't a physicssandbox design.";
+  if (!Array.isArray(d.dots) || !Array.isArray(d.lines)) return "The file is missing its dots or lines.";
+  const ids = new Set();
+  for (const dot of d.dots) {
+    if (!dot || !isFinite(dot.x) || !isFinite(dot.y) || !Number.isInteger(dot.id) || ids.has(dot.id)) {
+      return "The file has an invalid dot.";
+    }
+    ids.add(dot.id);
+  }
+  const pairs = new Set();
+  for (const l of d.lines) {
+    if (!l || !ids.has(l.a) || !ids.has(l.b) || l.a === l.b) return "The file has an invalid line.";
+    const pair = Math.min(l.a, l.b) + "-" + Math.max(l.a, l.b);
+    if (pairs.has(pair)) return "The file has a duplicate line.";
+    pairs.add(pair);
+    if (l.muscle != null && !(isFinite(l.muscle.px) && isFinite(l.muscle.py))) {
+      return "The file has an invalid muscle.";
+    }
+  }
+  return null;
+}
+
+function applyDesign(d) {
+  if (mode === "play") stopPlay();
+  if (d.params) {
+    for (const k of PARAM_KEYS) {
+      if (k === "wallReverse") {
+        if (typeof d.params.wallReverse === "boolean") params.wallReverse = d.params.wallReverse;
+        continue;
+      }
+      const v = Number(d.params[k]);
+      if (isFinite(v)) params[k] = k === "wallCooldown" ? Math.max(0, v) : v;
+    }
+  }
+  const clamp01 = v => Math.max(0, Math.min(1, v));
+  const byId = new Map();
+  dots = d.dots.map(src => {
+    const x = Math.max(0, Math.min(WORLD_W, src.x));
+    const y = Math.max(0, Math.min(WORLD_H, src.y));
+    const nd = { id: src.id, x, y, px: x, py: y, bx: x, by: y };
+    byId.set(nd.id, nd);
+    return nd;
+  });
+  lines = d.lines.map(src => {
+    const a = byId.get(src.a), b = byId.get(src.b);
+    return {
+      a, b,
+      rest: dist(a, b),
+      muscle: src.muscle ? { px: clamp01(src.muscle.px), py: clamp01(src.muscle.py) } : null,
+    };
+  });
+  dotIdSeq = dots.reduce((m, x) => Math.max(m, x.id), -1) + 1;
+  resetInteractionState();
+  for (const k in paramUI) paramUI[k]();
+  wallReverseBox.checked = params.wallReverse;
+  wallCooldownBox.value = params.wallCooldown;
+  pushHistory();  // loading is one undoable step
+}
+
+function downloadDesign(name) {
+  const file = /\.json$/i.test(name) ? name : name + ".json";
+  const blob = new Blob([serializeDesign()], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = file;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// One reusable modal: title + optional body text + optional filename input.
+const modal = $("modal");
+const modalTitle = $("modal-title");
+const modalText = $("modal-text");
+const modalInput = $("modal-input");
+const modalOk = $("modal-ok");
+const modalCancel = $("modal-cancel");
+let modalOnOk = null;
+
+function openModal({ title, text, input, okLabel, onOk }) {
+  modalTitle.textContent = title;
+  modalText.hidden = text == null;
+  modalText.textContent = text || "";
+  modalInput.hidden = input == null;
+  if (input != null) modalInput.value = input;
+  modalOk.textContent = okLabel || "OK";
+  modalOnOk = onOk || null;
+  modalCancel.hidden = !onOk;  // pure-notice dialogs (errors) only need OK
+  modal.showModal();
+  if (input != null) { modalInput.focus(); modalInput.select(); }
+}
+
+modalCancel.addEventListener("click", () => modal.close());
+modalOk.addEventListener("click", () => {
+  const fn = modalOnOk;
+  const value = modalInput.value.trim();
+  modal.close();
+  if (fn) fn(value);
+});
+modalInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); modalOk.click(); }
+});
+
+$("save-btn").addEventListener("click", () => {
+  openModal({
+    title: "Save design",
+    text: "Download the current design as a file you can keep or share.",
+    input: "physics-design",
+    okLabel: "Save",
+    onOk: (name) => downloadDesign(name || "physics-design"),
+  });
+});
+
+const loadFileInput = $("load-file");
+
+$("load-btn").addEventListener("click", () => {
+  openModal({
+    title: "Load design",
+    text: "Loading replaces the current design and settings (Undo brings the design back). Choose a design file.",
+    okLabel: "Choose file",
+    onOk: () => loadFileInput.click(),
+  });
+});
+
+loadFileInput.addEventListener("change", () => {
+  const f = loadFileInput.files[0];
+  loadFileInput.value = "";  // so picking the same file again still fires change
+  if (!f) return;
+  f.text().then(txt => {
+    let data;
+    try { data = JSON.parse(txt); } catch { loadError("That file isn't valid JSON."); return; }
+    const err = validateDesign(data);
+    if (err) { loadError(err); return; }
+    applyDesign(data);
+  }).catch(() => loadError("The file couldn't be read."));
+});
+
+function loadError(msg) {
+  openModal({ title: "Couldn't load", text: msg, okLabel: "OK" });
+}
 
 const playBtn = $("play-btn");
 playBtn.addEventListener("click", () => (mode === "build" ? startPlay() : stopPlay()));

@@ -14,7 +14,16 @@ Open `index.html` in a browser — no build step, no dependencies.
   input boxes.
 - **Center half** — Play area. A closed box whose four sides are solid.
 - **Right quarter** — Physics menu. Play/Stop button, gravity slider with
-  min/max inputs, rubber (bounciness) slider, Clear All.
+  min/max inputs, rubber (bounciness) slider, Save/Load buttons, Clear All.
+
+## Save / Load
+
+**Save** downloads the current design as a JSON file (dots, lines, muscles,
+and all physics/wave settings — gravity, rubber, friction, stiffness, wave
+speed/amplitude, wall reverse + cooldown). **Load** replaces the current
+design with one from a file; both steps show a confirm dialog first, and a
+load can be undone with Undo. Positions are stored in world units and the
+sim is deterministic, so a shared file replays identically on any device.
 
 ## Building controls
 
@@ -59,5 +68,5 @@ dependency):
 
 ## Status
 
-Initial draft. Ideas for next steps: dot–dot collision, save/load structures,
-multiple wave shapes, per-muscle wave period multipliers.
+Initial draft. Ideas for next steps: dot–dot collision, multiple wave shapes,
+per-muscle wave period multipliers.
