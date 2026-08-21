@@ -12,9 +12,16 @@ const params = {
   wallCooldown: 1.0, // s — minimum time between direction flips
 };
 
-const DOT_R = 7;          // dot draw/collision radius
+// The simulation lives in a fixed virtual world so identical builds play out
+// identically on every screen. The canvas scales the world to fit (letterboxed
+// to keep the aspect ratio); physics never sees screen pixels.
+const WORLD_W = 800;      // world units
+const WORLD_H = 800;
+const PHYS_DT = 1 / 60;   // fixed physics timestep, s — never tied to frame rate
+
+const DOT_R = 7;          // dot draw/collision radius (world units)
 const MUSCLE_R = 9;       // muscle marker radius
-const HIT_R = 12;         // click hit radius
+const HIT_R = 12;         // click hit radius (screen px)
 const DAMPING = 0.995;    // velocity damping per substep
 const MUSCLE_RAMP = 1.0;  // seconds to ease muscles in after Play, avoids a start-up jolt
 const SUBSTEPS = 4;
@@ -67,9 +74,17 @@ function resizeCanvas(canvas) {
 function resizeAll() { resizeCanvas(playCanvas); resizeCanvas(waveCanvas); }
 window.addEventListener("resize", resizeAll);
 
-function playSize() {
+// World→screen mapping for the play canvas: uniform scale to fit, centered
+// with letterbox bars when the canvas aspect differs from the world's.
+function playView() {
   const r = playCanvas.getBoundingClientRect();
-  return { w: r.width, h: r.height };
+  const scale = Math.min(r.width / WORLD_W, r.height / WORLD_H) || 1;
+  return {
+    left: r.left, top: r.top, cw: r.width, ch: r.height,
+    scale,
+    offX: (r.width - WORLD_W * scale) / 2,
+    offY: (r.height - WORLD_H * scale) / 2,
+  };
 }
 function waveSize() {
   const r = waveCanvas.getBoundingClientRect();
@@ -428,15 +443,35 @@ tabDotsBtn.addEventListener("click", () => setListTab("dots"));
 tabMusclesBtn.addEventListener("click", () => setListTab("muscles"));
 
 // ---------- Geometry helpers ----------
-function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y) || 0.0001; }
+// Physics math uses only IEEE-exact operations (+ − × ÷ sqrt), which are
+// bit-identical in every JS engine. Math.hypot / Math.sin / Math.pow are NOT
+// exactly specified, and in a chaotic sim a last-bit difference between
+// browsers grows into visibly different runs — so physics avoids them.
+function dist(a, b) {
+  const dx = a.x - b.x, dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy) || 0.0001;
+}
 function midpoint(l) { return { x: (l.a.x + l.b.x) / 2, y: (l.a.y + l.b.y) / 2 }; }
+
+// Deterministic sine built from exact ops: range-reduce, fold to [-π/2, π/2],
+// then an odd Taylor polynomial (max error ~4e-6, far below anything visible).
+function detSin(x) {
+  x -= TWO_PI * Math.floor((x + Math.PI) / TWO_PI);  // reduce to [-π, π)
+  if (x > Math.PI / 2) x = Math.PI - x;              // fold: sin(x) = sin(π − x)
+  else if (x < -Math.PI / 2) x = -Math.PI - x;
+  const x2 = x * x;
+  return x * (1 + x2 * (-1 / 6 + x2 * (1 / 120 + x2 * (-1 / 5040 + x2 / 362880))));
+}
 
 function connected(a, b) {
   return lines.some(l => (l.a === a && l.b === b) || (l.a === b && l.b === a));
 }
+// Hit tests work in world units, but hit radii are meant as screen distances —
+// divide by the view scale so tap targets stay the same size on every screen.
 function dotAt(p) {
+  const hr = HIT_R / playView().scale;
   for (let i = dots.length - 1; i >= 0; i--) {
-    if (Math.hypot(dots[i].x - p.x, dots[i].y - p.y) <= HIT_R) return dots[i];
+    if (Math.hypot(dots[i].x - p.x, dots[i].y - p.y) <= hr) return dots[i];
   }
   return null;
 }
@@ -444,6 +479,7 @@ function dotAt(p) {
 // Crossing lines can overlap, so callers pick the candidate that suits them.
 const LINE_HIT = 8;
 function linesNear(p) {
+  const hr = LINE_HIT / playView().scale;
   const res = [];
   for (const l of lines) {
     const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y;
@@ -453,7 +489,7 @@ function linesNear(p) {
     t = Math.max(0, Math.min(1, t));
     const cx = l.a.x + t * dx, cy = l.a.y + t * dy;
     const d = Math.hypot(p.x - cx, p.y - cy);
-    if (d <= LINE_HIT) res.push({ l, d });
+    if (d <= hr) res.push({ l, d });
   }
   return res.sort((a, b) => a.d - b.d).map(o => o.l);
 }
@@ -462,7 +498,7 @@ function linesNear(p) {
 // point: vertical placement = phase within the wave period, horizontal placement
 // = signed strength (center = still, right = expands first, left = contracts first).
 function muscleValue(m) {
-  return (m.px - 0.5) * 2 * Math.sin(m.py * TWO_PI - waveT);
+  return (m.px - 0.5) * 2 * detSin(m.py * TWO_PI - waveT);
 }
 
 // ---------- Play-area interaction ----------
@@ -470,10 +506,15 @@ function canvasPos(e, canvas) {
   const r = canvas.getBoundingClientRect();
   return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
+// Pointer position in world units (play canvas only).
+function playPos(e) {
+  const v = playView();
+  return { x: (e.clientX - v.left - v.offX) / v.scale, y: (e.clientY - v.top - v.offY) / v.scale };
+}
 
 playCanvas.addEventListener("mousedown", (e) => {
   if (e.button !== 0) return;
-  const p = canvasPos(e, playCanvas);
+  const p = playPos(e);
   downPos = p;
   if (mode !== "build") return;
   const d = dotAt(p);
@@ -498,13 +539,12 @@ playCanvas.addEventListener("mousedown", (e) => {
 // Positions clamp to the canvas edges while outside.
 function playDragActive() { return !!(dragMoveDot || dragGroup || boxSelect || dragLineFrom); }
 function clampToPlay(p) {
-  const { w, h } = playSize();
-  return { x: Math.max(0, Math.min(w, p.x)), y: Math.max(0, Math.min(h, p.y)) };
+  return { x: Math.max(0, Math.min(WORLD_W, p.x)), y: Math.max(0, Math.min(WORLD_H, p.y)) };
 }
 
 playCanvas.addEventListener("mousemove", (e) => {
   if (playDragActive()) return;  // window handler owns movement during drags
-  const p = canvasPos(e, playCanvas);
+  const p = playPos(e);
   mousePos = p;
   // hover: a dot lights up as a line-drag origin; anywhere on a muscled line
   // highlights its muscle; a bare line previews a pending muscle
@@ -533,7 +573,7 @@ window.addEventListener("mousemove", (e) => {
     return;
   }
   if (!playDragActive()) return;
-  const raw = canvasPos(e, playCanvas);
+  const raw = playPos(e);
   const p = clampToPlay(raw);
   mousePos = p;
   if (dragMoveDot) {
@@ -572,14 +612,15 @@ window.addEventListener("mouseup", (e) => {
     return;
   }
   if (!downPos) return;  // gesture didn't start on the play canvas
-  const p = clampToPlay(canvasPos(e, playCanvas));
-  const moved = downPos && Math.hypot(p.x - downPos.x, p.y - downPos.y) > 4;
+  const sc = playView().scale;
+  const p = clampToPlay(playPos(e));
+  const moved = downPos && Math.hypot(p.x - downPos.x, p.y - downPos.y) > 4 / sc;
 
   if (dragGroup) { if (moved) pushHistory(); dragGroup = null; downPos = null; return; }
   if (boxSelect) {
     const x0 = Math.min(boxSelect.x0, boxSelect.x1), x1 = Math.max(boxSelect.x0, boxSelect.x1);
     const y0 = Math.min(boxSelect.y0, boxSelect.y1), y1 = Math.max(boxSelect.y0, boxSelect.y1);
-    if (x1 - x0 < 5 && y1 - y0 < 5) {
+    if (x1 - x0 < 5 / sc && y1 - y0 < 5 / sc) {
       selectedDots = new Set();  // plain click on empty space deselects
     } else {
       selectedDots = new Set(dots.filter(d => d.x >= x0 && d.x <= x1 && d.y >= y0 && d.y <= y1));
@@ -641,7 +682,7 @@ playCanvas.addEventListener("mouseleave", () => {
 playCanvas.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   if (mode !== "build") return;
-  const p = canvasPos(e, playCanvas);
+  const p = playPos(e);
   const d = dotAt(p);
   let changed = false;
   if (d) {
@@ -712,7 +753,7 @@ waveCanvas.addEventListener("mouseleave", () => {
 // ---------- Physics (Verlet + distance constraints) ----------
 function physicsStep(dt) {
   const h = dt / SUBSTEPS;
-  const { w, h: ph } = playSize();
+  const w = WORLD_W, ph = WORLD_H;
 
   for (let s = 0; s < SUBSTEPS; s++) {
     // integrate
@@ -729,8 +770,10 @@ function physicsStep(dt) {
     // ease muscles in after Play so structures don't jolt on the first frames
     const r = Math.min(1, playTime / MUSCLE_RAMP);
     const ramp = r * r * (3 - 2 * r);
-    // per-iteration correction so CONSTRAINT_ITERS passes compound to params.stiffness
-    const iterK = 1 - Math.pow(1 - params.stiffness, 1 / CONSTRAINT_ITERS);
+    // per-iteration correction so CONSTRAINT_ITERS passes compound to
+    // params.stiffness; pow(x, 1/8) written as three exact square roots
+    // (assumes CONSTRAINT_ITERS === 8)
+    const iterK = 1 - Math.sqrt(Math.sqrt(Math.sqrt(1 - params.stiffness)));
 
     // solve constraints
     for (let it = 0; it < CONSTRAINT_ITERS; it++) {
@@ -747,7 +790,7 @@ function physicsStep(dt) {
         const k = l.muscle ? 1 : iterK;
         const dx = l.b.x - l.a.x;
         const dy = l.b.y - l.a.y;
-        const d = Math.hypot(dx, dy) || 0.0001;
+        const d = Math.sqrt(dx * dx + dy * dy) || 0.0001;
         const diff = (d - rest) / d * 0.5 * k;
         l.a.x += dx * diff;
         l.a.y += dy * diff;
@@ -802,8 +845,14 @@ function collideWalls(d, w, h) {
 
 // ---------- Rendering ----------
 function drawPlay() {
-  const { w, h } = playSize();
-  pctx.clearRect(0, 0, w, h);
+  const v = playView();
+  pctx.clearRect(0, 0, v.cw, v.ch);
+
+  // everything below draws in world units; the transform handles screen fit
+  pctx.save();
+  pctx.translate(v.offX, v.offY);
+  pctx.scale(v.scale, v.scale);
+  const w = WORLD_W, h = WORLD_H;
 
   // walls
   pctx.strokeStyle = "#000";
@@ -898,6 +947,8 @@ function drawPlay() {
       Math.abs(boxSelect.y1 - boxSelect.y0));
     pctx.restore();
   }
+
+  pctx.restore();  // world transform
 }
 
 function drawWave() {
@@ -929,7 +980,7 @@ function drawWave() {
   wctx.lineWidth = 1.5;
   wctx.beginPath();
   for (let y = 0; y <= g.h; y += 2) {
-    const x = g.cx + g.ampPx * Math.sin((y / g.h) * TWO_PI - waveT);
+    const x = g.cx + g.ampPx * detSin((y / g.h) * TWO_PI - waveT);
     if (y === 0) wctx.moveTo(x, y);
     else wctx.lineTo(x, y);
   }
@@ -963,14 +1014,25 @@ function drawWave() {
 }
 
 // ---------- Main loop ----------
+// Rendering runs at whatever rate the display refreshes; physics always steps
+// in fixed PHYS_DT ticks via an accumulator. Every device therefore computes
+// the exact same state sequence — a 120 Hz tablet just renders more frames of
+// it. The backlog cap makes a stalled tab slow down instead of jumping.
 let lastT = 0;
+let physAcc = 0;
 function frame(t) {
-  const dt = Math.min(0.033, (t - lastT) / 1000 || 0.016);
+  const dt = Math.min(0.1, (t - lastT) / 1000 || 0);
   lastT = t;
   if (mode === "play") {
-    waveT += waveDir * params.waveSpeed * dt;
-    playTime += dt;
-    physicsStep(dt);
+    physAcc = Math.min(physAcc + dt, 4 * PHYS_DT);
+    while (physAcc >= PHYS_DT) {
+      physAcc -= PHYS_DT;
+      waveT += waveDir * params.waveSpeed * PHYS_DT;
+      playTime += PHYS_DT;
+      physicsStep(PHYS_DT);
+    }
+  } else {
+    physAcc = 0;
   }
   updateDotList();
   updateMuscleList();

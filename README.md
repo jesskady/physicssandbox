@@ -39,10 +39,17 @@ space to deselect. Toggle back to Add mode to place dots/lines/muscles.
 Custom Verlet integration with iterative distance constraints (no engine
 dependency):
 
+- **Deterministic and device-independent.** The simulation runs in a fixed
+  800×800 virtual world (the canvas just scales it to fit the screen), steps
+  at a fixed 60 Hz timestep decoupled from the display's frame rate, and uses
+  only bit-exact IEEE floating-point operations (`Math.sin`/`Math.hypot`/
+  `Math.pow`, which can differ between browser engines, are replaced with
+  exact-op equivalents in physics code). Identical dot placements + settings
+  produce the identical run on any device or browser.
 - **Dots** are point masses — the only things with collision (against the four
   walls).
 - **Lines** are distance constraints, solved 8 iterations × 4 substeps per
-  frame, which keeps structures stable instead of exploding.
+  physics tick, which keeps structures stable instead of exploding.
 - **Muscles** oscillate a line's rest length symmetrically about its center:
   `rest × (1 + waveAmp × (dotX − 0.5)·2 × sin(dotY·2π − waveT))`, where
   (dotX, dotY) is the muscle's fixed dot position on the wave menu (0..1).
